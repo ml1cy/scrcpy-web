@@ -39,7 +39,22 @@ The first run opens a browser to authorize Wrangler against your Cloudflare acco
 - `1cy.tech` must be an active zone on the same Cloudflare account. Workers Custom Domains do not work on domains whose nameservers Cloudflare does not manage.
 - `adb.1cy.tech` must not already have a CNAME record. Cloudflare refuses to attach a Custom Domain on top of one, so delete it first if it exists.
 
-Alternatively, connect the repo to Workers Builds with build command `pnpm build` and output directory `dist`.
+### Deploying from the dashboard
+
+Workers & Pages → **Create application** → **Import a repository**, then pick `ml1cy/scrcpy-web`:
+
+| Field | Value |
+|---|---|
+| Git branch | `main` |
+| Build command | `pnpm build` |
+| Deploy command | `npx wrangler deploy` (the default) |
+
+Two things to get right, both of which fail the build or silently do nothing:
+
+- **Name the Worker `scrcpy-web`.** Workers Builds requires the dashboard Worker name to match `name` in `wrangler.jsonc`, or the build fails.
+- **Deploy from your production branch.** Commits to other branches run `wrangler versions upload` instead, which creates a preview version without putting it live.
+
+There is no output-directory field here — unlike Pages, the assets directory comes from `wrangler.jsonc`. The Custom Domain comes from there too, so the first successful deploy creates the `adb.1cy.tech` record; to do it by hand instead, use the Worker's **Settings → Domains & Routes → Add → Custom domain**.
 
 Two things make this work, and both are easy to break:
 
