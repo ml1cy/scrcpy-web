@@ -5,7 +5,17 @@ import {
   type AdbDaemonWebUsbDevice,
 } from "@yume-chan/adb-daemon-webusb";
 
-import type { DeviceInfo, Transport } from "./types";
+import type {
+  MaybeConsumable,
+  ReadableStream,
+} from "@yume-chan/stream-extra";
+
+import type {
+  DeviceInfo,
+  DeviceProcess,
+  DeviceSocket,
+  Transport,
+} from "./types";
 
 // Names the IndexedDB store holding our ADB RSA key. Changing it invalidates
 // every device authorization the user has already granted.
@@ -49,6 +59,40 @@ class WebUsbTransport implements Transport {
       this.#adb.getProp("ro.build.version.release"),
     ]);
     return { serial: this.serial, model, androidVersion };
+  }
+
+  async pushFile(
+    path: string,
+    content: ReadableStream<MaybeConsumable<Uint8Array>>,
+  ): Promise<void> {
+    const sync = await this.#adb.sync();
+    try {
+      await sync.write({ filename: path, file: content });
+    } finally {
+      await sync.dispose();
+    }
+  }
+
+  async openSocket(service: string): Promise<DeviceSocket> {
+    const socket = await this.#adb.createSocket(service);
+    return {
+      readable: socket.readable,
+      writable: socket.writable,
+      close: async () => {
+        await socket.close();
+      },
+    };
+  }
+
+  async spawn(command: readonly string[]): Promise<DeviceProcess> {
+    const process = await this.#adb.subprocess.noneProtocol.spawn(command);
+    return {
+      output: process.output,
+      exited: process.exited,
+      kill: async () => {
+        await process.kill();
+      },
+    };
   }
 
   async close(): Promise<void> {

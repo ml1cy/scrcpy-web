@@ -355,6 +355,60 @@ code {
   margin-top: 22px;
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ---------- live session ---------- */
+
+.stream {
+  margin-top: 22px;
+  padding: 18px 18px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgb(0 0 0 / 22%);
+}
+
+.stream-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.stream-head .dot {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.stream .props {
+  padding-top: 14px;
+}
+
+.stream .next-up {
+  margin-top: 18px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  padding: 12px 0 14px;
+}
+
+.next-up-busy {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border-style: solid;
+  color: var(--text-dim);
+}
+
+.spinner-sm {
+  width: 15px;
+  height: 15px;
+  border-width: 2px;
+  flex: none;
 }
 
 /* ---------- states ---------- */

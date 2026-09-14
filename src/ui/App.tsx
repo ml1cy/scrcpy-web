@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SCRCPY_SERVER_VERSION } from "../constants";
 import type { DeviceInfo, Transport } from "../transport/types";
 import { reconnectAuthorizedDevice, requestDevice } from "../transport/webusb";
+import { useScrcpySession } from "./useScrcpySession";
 import "./styles.css";
 
 type Status =
@@ -92,22 +93,121 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${String(bytes)} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function SessionBlock({
+  session,
+}: {
+  session: ReturnType<typeof useScrcpySession>;
+}) {
+  const { state } = session;
+
+  if (state.kind === "starting") {
+    return (
+      <p className="next-up next-up-busy">
+        <span className="spinner spinner-sm" />
+        {state.step}
+      </p>
+    );
+  }
+
+  if (state.kind === "error") {
+    return (
+      <>
+        <p className="error-detail" role="alert">
+          {state.message}
+        </p>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => void session.start()}
+        >
+          Try again
+        </button>
+      </>
+    );
+  }
+
+  if (state.kind === "streaming") {
+    const { video, stats } = state;
+    return (
+      <div className="stream">
+        <div className="stream-head">
+          <span className="dot" />
+          Streaming
+        </div>
+        <dl className="props">
+          <dt>Video</dt>
+          <dd>
+            {video.codecName}
+            {video.width !== undefined && video.height !== undefined
+              ? ` · ${String(video.width)}×${String(video.height)}`
+              : ""}
+          </dd>
+          <dt>Audio</dt>
+          <dd>{video.audioCodec ?? "not available"}</dd>
+          <dt>Packets</dt>
+          <dd>
+            {String(stats.packets)} · {String(stats.keyframes)} keyframes
+          </dd>
+          <dt>Received</dt>
+          <dd>
+            {formatBytes(stats.bytes)}
+            {stats.firstPacketBytes !== undefined
+              ? ` · first ${String(stats.firstPacketBytes)} B`
+              : ""}
+          </dd>
+        </dl>
+        <p className="next-up">
+          Sockets are open and packets are flowing. Decoding to a canvas lands
+          with the video milestone.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <p className="next-up">
+        Connected over ADB. Start the server to push scrcpy to the device and
+        open the video, audio, and control sockets.
+      </p>
+      <button
+        type="button"
+        className="btn btn-primary"
+        onClick={() => void session.start()}
+      >
+        Start server
+      </button>
+    </>
+  );
+}
+
 export function App() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [aboutOpen, setAboutOpen] = useState(false);
-  const transportRef = useRef<Transport | null>(null);
+  const [transport, setTransport] = useState<Transport | null>(null);
+  const session = useScrcpySession(transport);
 
-  const attach = useCallback(async (transport: Transport | undefined) => {
-    if (!transport) {
+  const attach = useCallback(async (next: Transport | undefined) => {
+    if (!next) {
       setStatus({ kind: "idle" });
       return;
     }
-    transportRef.current = transport;
-    void transport.disconnected.then(() => {
-      transportRef.current = null;
+    setTransport(next);
+    void next.disconnected.then(() => {
+      setTransport(null);
       setStatus({ kind: "idle" });
     });
-    setStatus({ kind: "connected", info: await transport.getDeviceInfo() });
+    setStatus({ kind: "connected", info: await next.getDeviceInfo() });
   }, []);
 
   const open = useCallback(
@@ -137,10 +237,11 @@ export function App() {
   const handleConnect = () => void open(requestDevice);
 
   const handleDisconnect = async () => {
-    const transport = transportRef.current;
-    transportRef.current = null;
+    const current = transport;
+    setTransport(null);
     setStatus({ kind: "idle" });
-    await transport?.close();
+    await session.stop();
+    await current?.close();
   };
 
   return (
@@ -183,12 +284,18 @@ export function App() {
               <dd>scrcpy {SCRCPY_SERVER_VERSION}</dd>
             </dl>
 
-            <p className="next-up">
-              Connected over ADB. Screen mirroring and input are not wired up
-              yet — that lands with the server bootstrap.
-            </p>
+            <SessionBlock session={session} />
 
             <div className="device-actions">
+              {session.state.kind === "streaming" && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => void session.stop()}
+                >
+                  Stop server
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-ghost btn-danger"
