@@ -25,21 +25,21 @@ pnpm lint      # run ESLint
 
 ## Deploying
 
-The app is fully client-side — the build output is static files, and the device connection is browser-to-USB, so it never touches the origin. It deploys to Cloudflare Workers static assets or Cloudflare Pages with no server component.
+The app is fully client-side — the build output is static files, and the device connection is browser-to-USB, so it never touches the origin. It deploys as an assets-only Cloudflare Worker, with no server component.
 
-Connect the repo and use:
-
-| Setting | Value |
-|---|---|
-| Build command | `pnpm build` |
-| Output directory | `dist` |
-
-Or deploy the built directory straight from the CLI, without adding wrangler to this project:
+`wrangler.jsonc` is configured to serve `dist` and to attach the Custom Domain **adb.1cy.tech**. To deploy:
 
 ```sh
-pnpm build
-npx wrangler pages deploy dist
+pnpm install
+pnpm deploy          # runs pnpm build, then wrangler deploy
 ```
+
+The first run opens a browser to authorize Wrangler against your Cloudflare account; in CI, set `CLOUDFLARE_API_TOKEN` instead. Wrangler creates the DNS record for the Custom Domain itself — two conditions have to hold:
+
+- `1cy.tech` must be an active zone on the same Cloudflare account. Workers Custom Domains do not work on domains whose nameservers Cloudflare does not manage.
+- `adb.1cy.tech` must not already have a CNAME record. Cloudflare refuses to attach a Custom Domain on top of one, so delete it first if it exists.
+
+Alternatively, connect the repo to Workers Builds with build command `pnpm build` and output directory `dist`.
 
 Two things make this work, and both are easy to break:
 

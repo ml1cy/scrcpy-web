@@ -1,0 +1,25 @@
+{
+  "name": "scrcpy-web",
+  "compatibility_date": "2026-09-14",
+
+  // Assets-only Worker: no `main`, nothing server-side. `dist` is produced by
+  // `pnpm build`, and the _headers file inside it is parsed by Cloudflare to
+  // apply the cross-origin isolation the TinyH264 fallback needs.
+  "assets": {
+    "directory": "./dist"
+  },
+
+  // Creates the DNS record for adb.1cy.tech on deploy. Requires 1cy.tech to be
+  // an active zone on this account, and adb.1cy.tech to have no pre-existing
+  // CNAME — Cloudflare refuses to attach a Custom Domain over one.
+  "routes": [
+    {
+      "pattern": "adb.1cy.tech",
+      "custom_domain": true
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}
