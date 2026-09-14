@@ -23,6 +23,31 @@ pnpm test      # run unit tests (Vitest)
 pnpm lint      # run ESLint
 ```
 
+## Deploying
+
+The app is fully client-side — the build output is static files, and the device connection is browser-to-USB, so it never touches the origin. It deploys to Cloudflare Workers static assets or Cloudflare Pages with no server component.
+
+Connect the repo and use:
+
+| Setting | Value |
+|---|---|
+| Build command | `pnpm build` |
+| Output directory | `dist` |
+
+Or deploy the built directory straight from the CLI, without adding wrangler to this project:
+
+```sh
+pnpm build
+npx wrangler pages deploy dist
+```
+
+Two things make this work, and both are easy to break:
+
+- **`public/_headers`** sets `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` on every response. These give the page cross-origin isolation, which `SharedArrayBuffer` requires — that is the TinyH264 WASM fallback path, not WebUSB. Cloudflare parses this file; Vite does not, so `pnpm preview` reflects it only because `vite.config.ts` sets the same two headers itself. Keep the two in sync.
+- **`public/scrcpy-server.jar`** is committed to the repo, not downloaded at build time, so a clean CI build always has it. It must match `SCRCPY_SERVER_VERSION` in `src/constants.ts` — the server exits immediately on a mismatch. `pnpm test` checks both that the jar is present and that it is the matching build, so a bad pin fails before it ships.
+
+HTTPS is required for WebUSB and Cloudflare provides it. The M6 WebSocket bridge is a separate, locally-run process: a Worker runs in Cloudflare's network and cannot reach a device on your machine or an adb server on `127.0.0.1:5037`.
+
 ## Troubleshooting
 
 - **Device not showing up / WebUSB permission errors:** a running local `adb` server (or Android Studio) can hold the USB interface. Run `adb kill-server` before connecting from the browser.

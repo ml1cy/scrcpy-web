@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "useDefineForClassFields": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
@@ -13,6 +12,11 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    // Tests run in Node, so they may reach for fs/zlib. Application code is
+    // typechecked by tsconfig.app.json, which has no Node types, so a stray
+    // node: import in the browser bundle still fails to compile.
+    "types": ["node"],
+
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -22,6 +26,5 @@
     "noImplicitReturns": true,
     "noImplicitOverride": true
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

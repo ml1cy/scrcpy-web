@@ -1,0 +1,14 @@
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The jar must match SCRCPY_SERVER_VERSION, so it changes when the pin does.
+# Revalidate rather than letting a stale one sit in a browser cache.
+/scrcpy-server.jar
+  Content-Type: application/java-archive
+  Cache-Control: no-cache
