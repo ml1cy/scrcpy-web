@@ -23,6 +23,31 @@ pnpm test      # run unit tests (Vitest)
 pnpm lint      # run ESLint
 ```
 
+## Deploying
+
+The app is fully client-side — the build output is static files, and the device connection is browser-to-USB, so it never touches the origin. It deploys as an assets-only Cloudflare Worker, with no server component.
+
+`wrangler.jsonc` is configured to serve `dist` and to attach the Custom Domain **adb.1cy.tech**. To deploy:
+
+```sh
+pnpm install
+pnpm deploy          # runs pnpm build, then wrangler deploy
+```
+
+The first run opens a browser to authorize Wrangler against your Cloudflare account; in CI, set `CLOUDFLARE_API_TOKEN` instead. Wrangler creates the DNS record for the Custom Domain itself — two conditions have to hold:
+
+- `1cy.tech` must be an active zone on the same Cloudflare account. Workers Custom Domains do not work on domains whose nameservers Cloudflare does not manage.
+- `adb.1cy.tech` must not already have a CNAME record. Cloudflare refuses to attach a Custom Domain on top of one, so delete it first if it exists.
+
+Alternatively, connect the repo to Workers Builds with build command `pnpm build` and output directory `dist`.
+
+Two things make this work, and both are easy to break:
+
+- **`public/_headers`** sets `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` on every response. These give the page cross-origin isolation, which `SharedArrayBuffer` requires — that is the TinyH264 WASM fallback path, not WebUSB. Cloudflare parses this file; Vite does not, so `pnpm preview` reflects it only because `vite.config.ts` sets the same two headers itself. Keep the two in sync.
+- **`public/scrcpy-server.jar`** is committed to the repo, not downloaded at build time, so a clean CI build always has it. It must match `SCRCPY_SERVER_VERSION` in `src/constants.ts` — the server exits immediately on a mismatch. `pnpm test` checks both that the jar is present and that it is the matching build, so a bad pin fails before it ships.
+
+HTTPS is required for WebUSB and Cloudflare provides it. The M6 WebSocket bridge is a separate, locally-run process: a Worker runs in Cloudflare's network and cannot reach a device on your machine or an adb server on `127.0.0.1:5037`.
+
 ## Troubleshooting
 
 - **Device not showing up / WebUSB permission errors:** a running local `adb` server (or Android Studio) can hold the USB interface. Run `adb kill-server` before connecting from the browser.
