@@ -13,7 +13,8 @@ Ship a web app that:
 1. Connects to an Android device over ADB from the browser.
 2. Pushes and launches the scrcpy server on the device.
 3. Decodes the H.264 video stream and renders it at low latency.
-4. Sends touch, keyboard, scroll, and clipboard events back to the device.
+4. Decodes and plays the device audio stream in sync with video.
+5. Sends touch, keyboard, scroll, and clipboard events back to the device.
 
 Target browser: Chromium desktop (Chrome/Edge). Chrome for Android is a nice-to-have, not a requirement.
 
@@ -61,6 +62,9 @@ src/
     decoder-webcodecs.ts
     decoder-tinyh264.ts
     renderer.ts       # VideoFrame -> canvas
+  audio/
+    demux.ts          # codec metadata, packet headers
+    player.ts         # AudioDecoder -> WebAudio
   control/
     messages.ts       # binary encoders for each control message type
     pointer.ts        # PointerEvent -> touch message
@@ -70,7 +74,7 @@ public/
   scrcpy-server.jar   # vendored, version must match SCRCPY_SERVER_VERSION
 ```
 
-Rules: `video/` and `control/` must not import from `transport/` or Tango. They take streams in and produce bytes out, so they stay unit-testable in Node without a device.
+Rules: `video/`, `audio/`, and `control/` must not import from `transport/` or Tango. They take streams in and produce bytes out, so they stay unit-testable in Node without a device.
 
 ## 5. Milestones
 
@@ -85,12 +89,16 @@ Vite project, TypeScript strict, lint, Vitest. A page with a Connect button.
 **Done when:** the UI shows the device model and Android version from a `getprop` shell call, and a page reload reconnects without a new phone-side authorization prompt.
 
 ### M2 — Server bootstrap
-Push the jar to `/data/local/tmp/scrcpy-server.jar`, launch via `app_process`, open the video socket in forward-tunnel mode.
-**Done when:** the first packet arrives and its size and codec id are logged. Killing the tab kills the server process on the device (verify with `ps -A | grep app_process`).
+Push the jar to `/data/local/tmp/scrcpy-server.jar`, launch via `app_process`, open the video, audio, and control sockets in forward-tunnel mode — in that order (see §6).
+**Done when:** the first packet arrives on the video socket and its size and codec id are logged, and all three sockets open without the server hanging. Killing the tab kills the server process on the device (verify with `ps -A | grep app_process`).
 
 ### M3 — Video
 Demux, decode with WebCodecs, render to canvas.
 **Done when:** the device screen is visible, rotation is handled, and a 60-second session shows no growing memory and no decoder stall. Measure glass-to-glass latency against a stopwatch app; log the number in `NOTES.md`.
+
+### M3.5 — Audio
+Demux the audio stream, decode it, and play it. Codec is negotiated with the server (Opus by default on 3.x); decode with WebCodecs `AudioDecoder` and play through WebAudio.
+**Done when:** audio plays in sync with video for a 60-second session, with no buffer underruns and no growing latency. Log the A/V offset in `NOTES.md`.
 
 ### M4 — Input
 Pointer, keyboard, scroll, back/home/app-switch buttons.
@@ -144,7 +152,7 @@ Each of these has cost someone a day. Check them first when something breaks.
 
 - Small commits, one concern each, imperative subject lines.
 - **No new dependencies without asking.** The dependency list above is the budget.
-- Unit tests for everything in `video/` and `control/` — these are pure byte manipulation and there's no excuse. Fixtures go in `test/fixtures/` as captured hex dumps.
+- Unit tests for everything in `video/`, `audio/`, and `control/` — these are pure byte manipulation and there's no excuse. Fixtures go in `test/fixtures/` as captured hex dumps.
 - No device-dependent logic in tests. If it needs hardware, it's a manual check in the milestone criteria instead.
 - When you change anything protocol-related, cite the scrcpy source file and version you checked in the commit message.
 - Log latency and memory numbers in `NOTES.md` as you go. Regressions here are the main thing that can quietly kill this project.
@@ -158,6 +166,9 @@ scrcpy is Apache 2.0 and Tango is MIT. Both licenses and the scrcpy NOTICE must 
 
 Answer these with me before they block you — don't guess:
 
-- Which scrcpy server version to pin. Confirm against the current Genymobile releases page, then check that the message layouts in `@yume-chan/scrcpy` still match that major.
-- Whether audio is in scope for v1. Currently assumed no.
 - Whether the WebSocket bridge (M6) should talk to a local `adb` server on port 5037 or to the device directly over `adb tcpip`.
+
+### Resolved
+
+- **Server version: pin `3.3.3`** (2026-09-14). Upstream is on 4.1, but stable `@yume-chan/scrcpy` (2.3.0) only ships option and layout support through 3.3.3 — 4.x exists only on its `3.0.0-beta` line. Pinning 3.3.3 keeps the scrcpy layer a stable dependency rather than something we hand-roll. Revisit when that beta goes stable.
+- **Audio is in scope for v1** (2026-09-14). Reverses the earlier assumption. M2 opens the audio socket, and M3.5 decodes and plays it.

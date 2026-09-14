@@ -6,7 +6,7 @@ See `CLAUDE.md` for the full project brief, milestones, and protocol notes.
 
 ## Status
 
-M0 — skeleton. Vite + TypeScript (strict) + Vitest + ESLint, with a placeholder Connect button. Device connection lands in M1.
+M1 — device connection. Connects to an Android device over WebUSB via [Tango](https://github.com/yume-chan/ya-webadb) and reports its model and Android version. Credentials persist, so a reload reconnects without re-authorizing on the phone. Mirroring starts at M2.
 
 ## Requirements
 
