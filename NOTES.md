@@ -41,6 +41,36 @@ encode and decode. Consequences:
 that a frame was actually closed. An earlier version of the harness reported
 "frames not closed" purely because the probe was wrong.
 
+## Why M3 showed no picture on real hardware
+
+Two bugs, both found by driving the real `launchServer` and the real video
+worker from a fake `Transport` in the browser — no device involved.
+
+**An unread socket stalls every socket.** `audio: true` is passed to the
+server, so it streams audio continuously, and the control socket carries device
+messages. Neither was being read. ADB multiplexes all sockets over one
+connection, so once an unread socket's buffer fills it blocks the entire
+connection — video included. The symptom is a session that connects, reports a
+codec, and then goes silent. Both streams are now drained until their real
+consumers exist (M3.5 for audio, M4 for control). The same hazard already
+applied to the spawned process's output, which `launchServer` has always
+drained; the audio socket was simply missed.
+
+**One rejected chunk killed the session.** A `VideoDecoder` that has just been
+configured rejects anything before the first keyframe with "A key frame is
+required after configure() or flush()". That error propagated out of the
+`WritableStream.write` the packets were piped into, which rejected the pipe and
+ended the stream permanently. The decoder now drops delta frames until a
+keyframe arrives, and treats a failed `decode()` as recoverable — report it and
+wait to resync — rather than fatal. Covered by unit tests with a stubbed
+`VideoDecoder`.
+
+Worth remembering: the fake-transport harness reproduced both without hardware.
+The scrcpy video framing needed to fake it is a 64-byte device name, `u32`
+codec id, `u32` width, `u32` height, then per packet a big-endian `u64` PTS,
+`u32` length and payload — with bit 63 of the PTS marking a configuration
+packet and bit 62 marking a keyframe.
+
 ## Verified without hardware (M3)
 
 Driving the real `CanvasRenderer` with VP8 in headless Chromium, through the

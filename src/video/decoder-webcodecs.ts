@@ -5,6 +5,8 @@ import type { VideoSink } from "./renderer";
 
 export interface DecoderCallbacks {
   onConfig?: (config: VideoConfig) => void;
+  /** Reported but not fatal: the stream keeps running and waits to resync. */
+  onDecodeError?: (error: Error) => void;
   onError: (error: Error) => void;
 }
 
@@ -22,6 +24,11 @@ export class WebCodecsVideoDecoder {
   #decoder: VideoDecoder | undefined;
   #config: VideoConfig | undefined;
   #closed = false;
+  // A freshly configured decoder rejects anything before the first keyframe
+  // with "A key frame is required after configure()". Dropping deltas until
+  // one arrives costs a few frames; feeding them throws instead.
+  #needsKeyframe = true;
+  #skipped = 0;
 
   constructor(sink: VideoSink, callbacks: DecoderCallbacks) {
     this.#sink = sink;
@@ -69,6 +76,7 @@ export class WebCodecsVideoDecoder {
           codedHeight: config.codedHeight,
           optimizeForLatency: true,
         });
+        this.#needsKeyframe = true;
         this.#callbacks.onConfig?.(config);
       }
       return;
@@ -80,13 +88,34 @@ export class WebCodecsVideoDecoder {
       return;
     }
 
-    decoder.decode(
-      new EncodedVideoChunk({
-        type: packet.keyframe === true ? "key" : "delta",
-        timestamp: Number(packet.pts ?? 0n),
-        data: packet.data,
-      }),
-    );
+    const keyframe = packet.keyframe === true;
+    if (this.#needsKeyframe && !keyframe) {
+      this.#skipped += 1;
+      return;
+    }
+
+    try {
+      decoder.decode(
+        new EncodedVideoChunk({
+          type: keyframe ? "key" : "delta",
+          timestamp: Number(packet.pts ?? 0n),
+          data: packet.data,
+        }),
+      );
+      this.#needsKeyframe = false;
+    } catch (error) {
+      // A rejected chunk must not tear down the stream: wait for the next
+      // keyframe and carry on, rather than killing the whole session.
+      this.#needsKeyframe = true;
+      this.#callbacks.onDecodeError?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+  }
+
+  /** Frames dropped while waiting for a keyframe to resync on. */
+  get skipped(): number {
+    return this.#skipped;
   }
 
   close(): void {

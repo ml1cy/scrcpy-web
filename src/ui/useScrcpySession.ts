@@ -10,6 +10,7 @@ export interface StreamStats {
   frames: number;
   packets: number;
   bytes: number;
+  skipped: number;
 }
 
 export interface VideoInfo {
@@ -27,6 +28,7 @@ export type SessionState =
       video: VideoInfo | undefined;
       stats: StreamStats;
       audioCodec: string | undefined;
+      warning: string | undefined;
     }
   | { kind: "error"; message: string };
 
@@ -69,7 +71,16 @@ export function useScrcpySession(transport: Transport | null) {
 
   const start = useCallback(async () => {
     const canvas = canvasRef.current;
-    if (!transport || sessionRef.current || !canvas) {
+    if (!transport || sessionRef.current) {
+      return;
+    }
+    if (!canvas) {
+      // Silently doing nothing here is how a broken start looks like a dead
+      // button, so say so instead.
+      setState({
+        kind: "error",
+        message: "Video canvas is not ready yet — try again in a moment.",
+      });
       return;
     }
     try {
@@ -89,8 +100,9 @@ export function useScrcpySession(transport: Transport | null) {
       setState({
         kind: "streaming",
         video: undefined,
-        stats: { frames: 0, packets: 0, bytes: 0 },
+        stats: { frames: 0, packets: 0, bytes: 0, skipped: 0 },
         audioCodec: session.audio?.codec.mimeType,
+        warning: undefined,
       });
 
       worker.onmessage = (event: MessageEvent<WorkerEvent>) => {
@@ -137,8 +149,17 @@ export function useScrcpySession(transport: Transport | null) {
                       frames: data.frames,
                       packets: data.packets,
                       bytes: data.bytes,
+                      skipped: data.skipped,
                     },
                   }
+                : current,
+            );
+            break;
+          case "warning":
+            console.warn(`[scrcpy] ${data.message}`);
+            setState((current) =>
+              current.kind === "streaming"
+                ? { ...current, warning: data.message }
                 : current,
             );
             break;

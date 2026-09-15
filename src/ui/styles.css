@@ -360,6 +360,12 @@ code {
 
 /* ---------- mirrored screen ---------- */
 
+/* An author `display` beats the UA rule for [hidden], so the attribute would
+   otherwise do nothing here. */
+.screen[hidden] {
+  display: none;
+}
+
 .screen {
   margin-top: 22px;
   display: flex;
@@ -417,6 +423,17 @@ code {
   border-top: 1px solid var(--border);
   border-radius: 0;
   padding: 12px 0 14px;
+}
+
+.stream-warning {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgb(255 200 120 / 28%);
+  border-radius: var(--radius-sm);
+  background: rgb(255 200 120 / 10%);
+  color: #ffd79a;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .next-up-busy {

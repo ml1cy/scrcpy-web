@@ -22,9 +22,11 @@ export interface ScrcpySession {
     readonly metadata: ScrcpyVideoStreamMetadata;
     readonly packets: ReadableStream<ScrcpyMediaStreamPacket>;
   };
-  readonly audio:
-    | { readonly codec: ScrcpyAudioCodec; readonly stream: ReadableStream<Uint8Array> }
-    | undefined;
+  /**
+   * Only the negotiated codec, for now. The audio bytes are discarded until
+   * M3.5 decodes them — see the note on draining in `launchServer`.
+   */
+  readonly audio: { readonly codec: ScrcpyAudioCodec } | undefined;
   readonly control: DeviceSocket;
   /** Resolves with the server's output if it exits on its own. */
   readonly exited: Promise<string>;
@@ -139,6 +141,20 @@ async function connectWithRetry(
   );
 }
 
+/**
+ * Reads a stream and throws the bytes away.
+ *
+ * ADB multiplexes every socket over one connection, so a socket nobody reads
+ * does not just stall itself — once its buffer fills it blocks the whole
+ * connection, video included. Anything the server writes has to be consumed,
+ * even when we have nothing to do with it yet.
+ */
+function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
+  return stream.pipeTo(new WritableStream()).catch(() => {
+    // The socket closing is how this normally ends.
+  });
+}
+
 function collectOutput(
   output: ReadableStream<Uint8Array>,
   onChunk: (text: string) => void,
@@ -227,6 +243,13 @@ export async function launchServer(
       sockets.audio.readable,
     );
 
+    // Audio is negotiated but not yet decoded, and the control socket carries
+    // device messages nothing reads until M4. Both must still be drained.
+    if (audioMetadata?.type === "success") {
+      void drain(audioMetadata.stream);
+    }
+    void drain(sockets.control.readable);
+
     return {
       video: {
         metadata: videoStream.metadata,
@@ -236,7 +259,7 @@ export async function launchServer(
       },
       audio:
         audioMetadata?.type === "success"
-          ? { codec: audioMetadata.codec, stream: audioMetadata.stream }
+          ? { codec: audioMetadata.codec }
           : undefined,
       control: sockets.control,
       exited: exitedWithOutput,
