@@ -17,7 +17,14 @@ export type WorkerRequest = StartMessage | { type: "stop" };
 export type WorkerEvent =
   | { type: "config"; codec: string; width: number; height: number }
   | { type: "size"; width: number; height: number }
-  | { type: "stats"; frames: number; packets: number; bytes: number }
+  | {
+      type: "stats";
+      frames: number;
+      packets: number;
+      bytes: number;
+      skipped: number;
+    }
+  | { type: "warning"; message: string }
   | { type: "ended" }
   | { type: "error"; message: string };
 
@@ -69,13 +76,22 @@ function start(message: StartMessage): void {
         height: config.croppedHeight,
       });
     },
+    onDecodeError: (error) => {
+      // Recoverable: the decoder resyncs on the next keyframe.
+      post({ type: "warning", message: error.message });
+    },
     onError: (error) => {
       post({ type: "error", message: error.message });
     },
   });
 
+  const snapshot = () => ({
+    ...counters,
+    skipped: decoder?.skipped ?? 0,
+  });
+
   statsTimer = setInterval(() => {
-    post({ type: "stats", ...counters });
+    post({ type: "stats", ...snapshot() });
   }, STATS_INTERVAL_MS);
 
   message.packets
@@ -84,13 +100,21 @@ function start(message: StartMessage): void {
         write(packet) {
           counters.packets += 1;
           counters.bytes += packet.data.length;
-          decoder?.handle(packet);
+          try {
+            decoder?.handle(packet);
+          } catch (error) {
+            // Never let one bad packet reject the pipe and end the session.
+            post({
+              type: "warning",
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
         },
       }),
     )
     .then(
       () => {
-        post({ type: "stats", ...counters });
+        post({ type: "stats", ...snapshot() });
         post({ type: "ended" });
         stop();
       },

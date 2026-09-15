@@ -138,12 +138,16 @@ function SessionBlock({
   }
 
   if (state.kind === "streaming") {
-    const { video, stats, audioCodec } = state;
+    const { video, stats, audioCodec, warning } = state;
     return (
       <div className="stream">
         <div className="stream-head">
           <span className="dot" />
-          {video ? "Mirroring" : "Waiting for first frame…"}
+          {stats.frames > 0
+            ? "Mirroring"
+            : video
+              ? "Waiting for a keyframe…"
+              : "Waiting for stream…"}
         </div>
         <dl className="props">
           <dt>Video</dt>
@@ -157,10 +161,14 @@ function SessionBlock({
           <dt>Frames</dt>
           <dd>
             {String(stats.frames)} decoded · {String(stats.packets)} packets
+            {stats.skipped > 0 ? ` · ${String(stats.skipped)} skipped` : ""}
           </dd>
           <dt>Received</dt>
           <dd>{formatBytes(stats.bytes)}</dd>
         </dl>
+        {warning !== undefined && (
+          <p className="stream-warning">Decoder: {warning}</p>
+        )}
       </div>
     );
   }
