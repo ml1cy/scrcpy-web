@@ -1,4 +1,7 @@
-import type { ScrcpyMediaStreamPacket } from "@yume-chan/scrcpy";
+import type {
+  ScrcpyMediaStreamDataPacket,
+  ScrcpyMediaStreamPacket,
+} from "@yume-chan/scrcpy";
 
 import { parseH264Config, type VideoConfig } from "./demux";
 import type { VideoSink } from "./renderer";
@@ -14,20 +17,20 @@ export interface DecoderCallbacks {
  * Feeds scrcpy media packets into a WebCodecs `VideoDecoder` and hands decoded
  * frames to a sink.
  *
- * Chromium accepts Annex-B payloads directly as long as `description` is left
- * out of the decoder config, which is what scrcpy sends, so no conversion to
- * AVCC is needed.
+ * scrcpy sends Annex-B, which Chromium decodes only when `description` is left
+ * out of the decoder config. In that mode the parameter sets have to travel in
+ * the bitstream, so the SPS/PPS from a configuration packet is prepended to the
+ * next keyframe rather than being used only to derive the codec string.
  */
 export class WebCodecsVideoDecoder {
   readonly #sink: VideoSink;
   readonly #callbacks: DecoderCallbacks;
   #decoder: VideoDecoder | undefined;
   #config: VideoConfig | undefined;
+  /** The raw SPS/PPS bytes, which must be replayed ahead of a keyframe. */
+  #configData: Uint8Array | undefined;
+  #configured = false;
   #closed = false;
-  // A freshly configured decoder rejects anything before the first keyframe
-  // with "A key frame is required after configure()". Dropping deltas until
-  // one arrives costs a few frames; feeding them throws instead.
-  #needsKeyframe = true;
   #skipped = 0;
 
   constructor(sink: VideoSink, callbacks: DecoderCallbacks) {
@@ -37,6 +40,11 @@ export class WebCodecsVideoDecoder {
 
   get config(): VideoConfig | undefined {
     return this.#config;
+  }
+
+  /** Frames dropped while waiting for a keyframe to resync on. */
+  get skipped(): number {
+    return this.#skipped;
   }
 
   #ensureDecoder(): VideoDecoder {
@@ -55,6 +63,30 @@ export class WebCodecsVideoDecoder {
     return this.#decoder;
   }
 
+  #configureAndDecodeKeyframe(
+    decoder: VideoDecoder,
+    config: VideoConfig,
+    configData: Uint8Array,
+    packet: ScrcpyMediaStreamDataPacket,
+  ): void {
+    // Coded dimensions are deliberately omitted: the SPS is authoritative, and
+    // a mismatch here is rejected rather than corrected.
+    decoder.configure({ codec: config.codec, optimizeForLatency: true });
+    this.#configured = true;
+
+    const data = new Uint8Array(configData.length + packet.data.length);
+    data.set(configData, 0);
+    data.set(packet.data, configData.length);
+
+    decoder.decode(
+      new EncodedVideoChunk({
+        type: "key",
+        timestamp: Number(packet.pts ?? 0n),
+        data,
+      }),
+    );
+  }
+
   handle(packet: ScrcpyMediaStreamPacket): void {
     if (this.#closed) {
       return;
@@ -62,39 +94,46 @@ export class WebCodecsVideoDecoder {
 
     if (packet.type === "configuration") {
       const config = parseH264Config(packet.data);
-      // A rotation sends a fresh SPS. Reconfiguring on any change keeps the
-      // decoder and the displayed size in step on the same packet.
-      if (
-        this.#config?.codec !== config.codec ||
-        this.#config.codedWidth !== config.codedWidth ||
-        this.#config.codedHeight !== config.codedHeight
-      ) {
-        this.#config = config;
-        this.#ensureDecoder().configure({
-          codec: config.codec,
-          codedWidth: config.codedWidth,
-          codedHeight: config.codedHeight,
-          optimizeForLatency: true,
-        });
-        this.#needsKeyframe = true;
-        this.#callbacks.onConfig?.(config);
-      }
+      this.#config = config;
+      this.#configData = packet.data;
+      // A rotation sends a fresh SPS; the decoder is reconfigured on the
+      // keyframe that follows it, together with these bytes.
+      this.#configured = false;
+      this.#callbacks.onConfig?.(config);
       return;
     }
 
-    const decoder = this.#decoder;
-    if (!decoder || decoder.state !== "configured") {
-      // Frames before the first configuration packet cannot be decoded.
-      return;
-    }
-
-    const keyframe = packet.keyframe === true;
-    if (this.#needsKeyframe && !keyframe) {
+    const config = this.#config;
+    const configData = this.#configData;
+    if (!config || !configData) {
+      // Nothing can be decoded before the first configuration packet.
       this.#skipped += 1;
       return;
     }
 
+    // scrcpy before 1.23 sends no keyframe flag; an unflagged frame is treated
+    // as a keyframe, which is what the decoder needs to start anyway.
+    const keyframe = packet.keyframe !== false;
+    const decoder = this.#ensureDecoder();
+
     try {
+      if (keyframe) {
+        // A backlog means the device is producing faster than this machine
+        // decodes. Dropping it at a keyframe caps latency at one keyframe
+        // interval instead of letting it grow for the whole session.
+        if (this.#configured && decoder.decodeQueueSize > 0) {
+          decoder.reset();
+          this.#configured = false;
+        }
+        if (!this.#configured) {
+          this.#configureAndDecodeKeyframe(decoder, config, configData, packet);
+          return;
+        }
+      } else if (!this.#configured) {
+        this.#skipped += 1;
+        return;
+      }
+
       decoder.decode(
         new EncodedVideoChunk({
           type: keyframe ? "key" : "delta",
@@ -102,20 +141,14 @@ export class WebCodecsVideoDecoder {
           data: packet.data,
         }),
       );
-      this.#needsKeyframe = false;
     } catch (error) {
       // A rejected chunk must not tear down the stream: wait for the next
       // keyframe and carry on, rather than killing the whole session.
-      this.#needsKeyframe = true;
+      this.#configured = false;
       this.#callbacks.onDecodeError?.(
         error instanceof Error ? error : new Error(String(error)),
       );
     }
-  }
-
-  /** Frames dropped while waiting for a keyframe to resync on. */
-  get skipped(): number {
-    return this.#skipped;
   }
 
   close(): void {

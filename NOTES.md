@@ -56,6 +56,29 @@ consumers exist (M3.5 for audio, M4 for control). The same hazard already
 applied to the spawned process's output, which `launchServer` has always
 drained; the audio socket was simply missed.
 
+**The SPS/PPS was parsed and then thrown away.** This is the one that left the
+picture black even after the stall was fixed: 1099 packets and 16 MB received,
+0 frames decoded, 0 skipped, and no error anywhere. scrcpy sends Annex-B, and
+Chromium only accepts Annex-B when `description` is omitted from the decoder
+config — but in that mode the parameter sets have to arrive *in the bitstream*.
+scrcpy sends them as a separate configuration packet, which was being used to
+derive the codec string and then discarded, so every keyframe reached the
+decoder without an SPS. The decoder accepted each chunk and silently produced
+nothing.
+
+The fix is to keep the configuration packet's raw bytes and prepend them to the
+next keyframe, deferring `configure()` until that keyframe rather than calling
+it when the configuration packet arrives. `@yume-chan/scrcpy-decoder-webcodecs`
+does the same thing and says why in a comment; reading it confirmed the
+diagnosis. Two related details came from there: coded dimensions are left out
+of the decoder config because the SPS is authoritative, and a non-empty
+`decodeQueueSize` at a keyframe is dropped with `reset()` so latency is capped
+at one keyframe interval instead of growing all session.
+
+Diagnostic worth keeping: **frames 0, skipped 0, packets climbing, no error**
+means chunks are being accepted and nothing comes back — look at what the
+decoder is being fed, not at whether it is running.
+
 **One rejected chunk killed the session.** A `VideoDecoder` that has just been
 configured rejects anything before the first keyframe with "A key frame is
 required after configure() or flush()". That error propagated out of the
