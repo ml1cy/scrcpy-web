@@ -1,41 +1,34 @@
-import { WritableStream } from "@yume-chan/stream-extra";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ScrcpySession } from "../server/launch";
 import { launchServer } from "../server/launch";
 import { pushServer } from "../server/push";
 import type { Transport } from "../transport/types";
+import type { WorkerEvent, WorkerRequest } from "../video/worker";
 
 export interface StreamStats {
+  frames: number;
   packets: number;
   bytes: number;
-  keyframes: number;
-  firstPacketBytes: number | undefined;
 }
 
 export interface VideoInfo {
-  codec: number;
-  codecName: string;
-  width: number | undefined;
-  height: number | undefined;
+  codec: string;
+  width: number;
+  height: number;
   audioCodec: string | undefined;
 }
 
 export type SessionState =
   | { kind: "idle" }
   | { kind: "starting"; step: string }
-  | { kind: "streaming"; video: VideoInfo; stats: StreamStats }
+  | {
+      kind: "streaming";
+      video: VideoInfo | undefined;
+      stats: StreamStats;
+      audioCodec: string | undefined;
+    }
   | { kind: "error"; message: string };
-
-const CODEC_NAMES = new Map<number, string>([
-  [0x68_32_36_34, "H.264"],
-  [0x68_32_36_35, "H.265"],
-  [0x00_61_76_31, "AV1"],
-]);
-
-// Counters update per packet, which is far faster than anything worth
-// rendering. They accumulate in a ref and flush on this interval instead.
-const STATS_FLUSH_MS = 400;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -44,25 +37,39 @@ function message(error: unknown): string {
 export function useScrcpySession(transport: Transport | null) {
   const [state, setState] = useState<SessionState>({ kind: "idle" });
   const sessionRef = useRef<ScrcpySession | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // transferControlToOffscreen throws if called twice on the same element, so
+  // each session remounts the canvas under a fresh key.
+  const [canvasKey, setCanvasKey] = useState(0);
 
-  const stop = useCallback(async () => {
+  const teardown = useCallback(() => {
+    workerRef.current?.postMessage({ type: "stop" } satisfies WorkerRequest);
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setCanvasKey((key) => key + 1);
     const session = sessionRef.current;
     sessionRef.current = null;
-    setState({ kind: "idle" });
-    await session?.close();
+    return session?.close();
   }, []);
+
+  const stop = useCallback(async () => {
+    const closing = teardown();
+    setState({ kind: "idle" });
+    await closing;
+  }, [teardown]);
 
   // A live session holds the device's screen capture open, so it must not
   // outlive the component that started it.
   useEffect(() => {
     return () => {
-      void sessionRef.current?.close();
-      sessionRef.current = null;
+      void teardown();
     };
-  }, []);
+  }, [teardown]);
 
   const start = useCallback(async () => {
-    if (!transport || sessionRef.current) {
+    const canvas = canvasRef.current;
+    if (!transport || sessionRef.current || !canvas) {
       return;
     }
     try {
@@ -73,72 +80,98 @@ export function useScrcpySession(transport: Transport | null) {
       const session = await launchServer(transport);
       sessionRef.current = session;
 
-      const { metadata } = session.video;
-      const video: VideoInfo = {
-        codec: metadata.codec,
-        codecName: CODEC_NAMES.get(metadata.codec) ?? `0x${metadata.codec.toString(16)}`,
-        width: metadata.width,
-        height: metadata.height,
+      const worker = new Worker(
+        new URL("../video/worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      workerRef.current = worker;
+
+      setState({
+        kind: "streaming",
+        video: undefined,
+        stats: { frames: 0, packets: 0, bytes: 0 },
         audioCodec: session.audio?.codec.mimeType,
+      });
+
+      worker.onmessage = (event: MessageEvent<WorkerEvent>) => {
+        const data = event.data;
+        switch (data.type) {
+          case "config":
+            console.info(
+              `[scrcpy] video config: ${data.codec} ${String(data.width)}x${String(data.height)}`,
+            );
+            setState((current) =>
+              current.kind === "streaming"
+                ? {
+                    ...current,
+                    video: {
+                      codec: data.codec,
+                      width: data.width,
+                      height: data.height,
+                      audioCodec: current.audioCodec,
+                    },
+                  }
+                : current,
+            );
+            break;
+          case "size":
+            setState((current) =>
+              current.kind === "streaming" && current.video
+                ? {
+                    ...current,
+                    video: {
+                      ...current.video,
+                      width: data.width,
+                      height: data.height,
+                    },
+                  }
+                : current,
+            );
+            break;
+          case "stats":
+            setState((current) =>
+              current.kind === "streaming"
+                ? {
+                    ...current,
+                    stats: {
+                      frames: data.frames,
+                      packets: data.packets,
+                      bytes: data.bytes,
+                    },
+                  }
+                : current,
+            );
+            break;
+          case "ended":
+            break;
+          case "error":
+            setState({ kind: "error", message: data.message });
+            break;
+        }
       };
 
-      const stats: StreamStats = {
-        packets: 0,
-        bytes: 0,
-        keyframes: 0,
-        firstPacketBytes: undefined,
+      const offscreen = canvas.transferControlToOffscreen();
+      const request: WorkerRequest = {
+        type: "start",
+        canvas: offscreen,
+        packets: session.video.packets,
       };
-      setState({ kind: "streaming", video, stats: { ...stats } });
-
-      const flush = setInterval(() => {
-        setState((current) =>
-          current.kind === "streaming"
-            ? { ...current, stats: { ...stats } }
-            : current,
-        );
-      }, STATS_FLUSH_MS);
-
-      // M2 only proves the stream is alive; decoding arrives with M3.
-      void session.video.packets
-        .pipeTo(
-          new WritableStream({
-            write(packet) {
-              stats.packets += 1;
-              stats.bytes += packet.data.length;
-              if (packet.type === "data" && packet.keyframe === true) {
-                stats.keyframes += 1;
-              }
-              if (stats.firstPacketBytes === undefined) {
-                stats.firstPacketBytes = packet.data.length;
-                console.info(
-                  `[scrcpy] first video packet: ${String(packet.data.length)} bytes, ` +
-                    `codec id 0x${metadata.codec.toString(16)} (${video.codecName}), ` +
-                    `${String(metadata.width)}x${String(metadata.height)}`,
-                );
-              }
-            },
-          }),
-        )
-        .catch((error: unknown) => {
-          setState({ kind: "error", message: message(error) });
-        })
-        .finally(() => {
-          clearInterval(flush);
-        });
+      // Both the canvas and the packet stream are transferred, so decoding and
+      // drawing never touch the main thread.
+      worker.postMessage(request, [offscreen, session.video.packets]);
 
       void session.exited.then((output) => {
-        clearInterval(flush);
-        sessionRef.current = null;
+        void teardown();
         setState({
           kind: "error",
           message: output.trim() || "Server exited unexpectedly",
         });
       });
     } catch (error) {
-      sessionRef.current = null;
+      void teardown();
       setState({ kind: "error", message: message(error) });
     }
-  }, [transport]);
+  }, [transport, teardown]);
 
-  return { state, start, stop };
+  return { state, start, stop, canvasRef, canvasKey };
 }
