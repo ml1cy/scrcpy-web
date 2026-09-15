@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SCRCPY_SERVER_VERSION } from "../constants";
 import type { DeviceInfo, Transport } from "../transport/types";
 import { reconnectAuthorizedDevice, requestDevice } from "../transport/webusb";
+import type { SessionState } from "./useScrcpySession";
 import { useScrcpySession } from "./useScrcpySession";
 import "./styles.css";
 
@@ -104,12 +105,12 @@ function formatBytes(bytes: number): string {
 }
 
 function SessionBlock({
-  session,
+  state,
+  onStart,
 }: {
-  session: ReturnType<typeof useScrcpySession>;
+  state: SessionState;
+  onStart: () => void;
 }) {
-  const { state } = session;
-
   if (state.kind === "starting") {
     return (
       <p className="next-up next-up-busy">
@@ -128,7 +129,7 @@ function SessionBlock({
         <button
           type="button"
           className="btn btn-primary"
-          onClick={() => void session.start()}
+          onClick={onStart}
         >
           Try again
         </button>
@@ -137,39 +138,29 @@ function SessionBlock({
   }
 
   if (state.kind === "streaming") {
-    const { video, stats } = state;
+    const { video, stats, audioCodec } = state;
     return (
       <div className="stream">
         <div className="stream-head">
           <span className="dot" />
-          Streaming
+          {video ? "Mirroring" : "Waiting for first frame…"}
         </div>
         <dl className="props">
           <dt>Video</dt>
           <dd>
-            {video.codecName}
-            {video.width !== undefined && video.height !== undefined
-              ? ` · ${String(video.width)}×${String(video.height)}`
-              : ""}
+            {video
+              ? `${video.codec} · ${String(video.width)}×${String(video.height)}`
+              : "negotiating"}
           </dd>
           <dt>Audio</dt>
-          <dd>{video.audioCodec ?? "not available"}</dd>
-          <dt>Packets</dt>
+          <dd>{audioCodec ?? "not available"}</dd>
+          <dt>Frames</dt>
           <dd>
-            {String(stats.packets)} · {String(stats.keyframes)} keyframes
+            {String(stats.frames)} decoded · {String(stats.packets)} packets
           </dd>
           <dt>Received</dt>
-          <dd>
-            {formatBytes(stats.bytes)}
-            {stats.firstPacketBytes !== undefined
-              ? ` · first ${String(stats.firstPacketBytes)} B`
-              : ""}
-          </dd>
+          <dd>{formatBytes(stats.bytes)}</dd>
         </dl>
-        <p className="next-up">
-          Sockets are open and packets are flowing. Decoding to a canvas lands
-          with the video milestone.
-        </p>
       </div>
     );
   }
@@ -178,14 +169,14 @@ function SessionBlock({
     <>
       <p className="next-up">
         Connected over ADB. Start the server to push scrcpy to the device and
-        open the video, audio, and control sockets.
+        begin mirroring the screen.
       </p>
       <button
         type="button"
         className="btn btn-primary"
-        onClick={() => void session.start()}
+        onClick={onStart}
       >
-        Start server
+        Start mirroring
       </button>
     </>
   );
@@ -195,7 +186,13 @@ export function App() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [aboutOpen, setAboutOpen] = useState(false);
   const [transport, setTransport] = useState<Transport | null>(null);
-  const session = useScrcpySession(transport);
+  const {
+    state: sessionState,
+    start: startSession,
+    stop: stopSession,
+    canvasRef,
+    canvasKey,
+  } = useScrcpySession(transport);
 
   const attach = useCallback(async (next: Transport | undefined) => {
     if (!next) {
@@ -240,7 +237,7 @@ export function App() {
     const current = transport;
     setTransport(null);
     setStatus({ kind: "idle" });
-    await session.stop();
+    await stopSession();
     await current?.close();
   };
 
@@ -284,16 +281,25 @@ export function App() {
               <dd>scrcpy {SCRCPY_SERVER_VERSION}</dd>
             </dl>
 
-            <SessionBlock session={session} />
+            {/* Kept mounted so transferControlToOffscreen has an element to
+                claim the moment the session starts. */}
+            <div className="screen" hidden={sessionState.kind !== "streaming"}>
+              <canvas key={canvasKey} ref={canvasRef} />
+            </div>
+
+            <SessionBlock
+              state={sessionState}
+              onStart={() => void startSession()}
+            />
 
             <div className="device-actions">
-              {session.state.kind === "streaming" && (
+              {sessionState.kind === "streaming" && (
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  onClick={() => void session.stop()}
+                  onClick={() => void stopSession()}
                 >
-                  Stop server
+                  Stop mirroring
                 </button>
               )}
               <button

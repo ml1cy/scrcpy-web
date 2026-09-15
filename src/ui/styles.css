@@ -358,6 +358,29 @@ code {
   gap: 10px;
 }
 
+/* ---------- mirrored screen ---------- */
+
+.screen {
+  margin-top: 22px;
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.screen canvas {
+  display: block;
+  max-width: 100%;
+  /* Tall phone screens must not push the panel past the viewport. */
+  max-height: 60dvh;
+  height: auto;
+  border-radius: 6px;
+  /* Nearest-neighbour would shimmer while scaling a live stream. */
+  image-rendering: auto;
+}
+
 /* ---------- live session ---------- */
 
 .stream {
